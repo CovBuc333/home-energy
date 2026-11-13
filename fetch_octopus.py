@@ -86,12 +86,14 @@ def main():
         data = {}
     data.setdefault("electricity", {})
     data.setdefault("gas", {})
-    data["gas_unit"] = os.environ.get("GAS_UNIT", data.get("gas_unit", "m3"))
+    unit = os.environ.get("GAS_UNIT") or data.get("gas_unit", "m3")
+    changed = data.get("gas_unit") != unit   # saving a changed unit counts as an update
+    data["gas_unit"] = unit
 
     acct = get(f"{BASE}/accounts/{acc}/", auth)
     meters = find_meters(acct)
     cutoff = refresh_cutoff()
-    changed, fetched, errors = False, 0, 0
+    fetched, errors = 0, 0
 
     for fuel, paths in meters.items():
         new = {}

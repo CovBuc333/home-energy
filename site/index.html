@@ -2,6 +2,13 @@
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Home energy usage</title>
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#f6f5fb" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#14121f" media="(prefers-color-scheme: dark)">
+<link rel="icon" type="image/png" href="icon-192.png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Energy">
 <style>
 :root{--bg:#f6f5fb;--card:#fff;--tx:#1d1a2e;--mut:#6b6880;--bd:#e2e0ee;--el:#3b82f6;--gs:#f97316;--up:#d9480f;--dn:#2b9348}
 @media(prefers-color-scheme:dark){:root{--bg:#14121f;--card:#1e1b2e;--tx:#efedf8;--mut:#9c98b3;--bd:#34304a;--up:#ff8a5c;--dn:#4cc275}}
@@ -25,8 +32,10 @@ tfoot td{font-weight:700}
 .row{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;align-items:end}
 label{display:block;font-size:12px;color:var(--mut);margin-bottom:3px}
 select{font:inherit;padding:8px 10px;border-radius:8px;border:1px solid var(--bd);background:var(--bg);color:var(--tx);width:100%}
+header{display:flex;align-items:center;justify-content:space-between;gap:10px}
+#install{font:inherit;font-size:13px;font-weight:600;padding:7px 12px;border-radius:999px;border:0;background:#f59e0b;color:#1d1a2e;cursor:pointer}
 </style></head><body><main>
-<h1>🏠 Home energy usage</h1>
+<header><h1>⚡ Home energy usage</h1><button id="install" hidden>Install app</button></header>
 <p class="mut" id="msg">Loading…</p>
 
 <div id="app" hidden>
@@ -59,8 +68,8 @@ const NAME={electricity:'Electricity',gas:'Gas'};
 const GASF=11.2; // approx kWh per m³ for SMETS2 gas meters
 let D,years=[],charts={},LY,LM;
 
-fetch('data.json?'+Date.now()).then(r=>{if(!r.ok)throw 0;return r.json()}).then(j=>{D=j;start()})
- .catch(()=>{$('msg').textContent='No data yet. In GitHub: Actions → Update energy data and deploy site → Run workflow.'});
+fetch('data.json',{cache:'no-store'}).then(r=>{if(!r.ok)throw 0;return r.json()}).then(j=>{D=j;start()})
+ .catch(e=>{$('msg').textContent=D?'Could not display the data: '+(e&&e.message||e):'No data yet. In GitHub: Actions → Update energy data and deploy site → Run workflow.'});
 
 const key=(y,m)=>y+'-'+String(m+1).padStart(2,'0');
 function val(f,y,m){const v=D[f][key(y,m)];if(v==null)return null;return f==='gas'&&D.gas_unit==='m3'?v*GASF:v}
@@ -152,4 +161,11 @@ function detail(){
   h+=`</tbody><tfoot><tr><td>Jan–${MN[LM]}</td>`+ys.map(y=>`<td>${fmt(span(f,y,LM))}</td>`).join('')+`<td>${pctHtml(pct(sa,sb))}</td></tr></tfoot></table>`;
   $('tbl').innerHTML=h+`<p class="mut">Monthly figures in kWh. The latest month may be incomplete.`+(f==='gas'&&D.gas_unit==='m3'?` Gas converted from m³ at about ${GASF} kWh/m³.`:'')+'</p>';
 }
+
+// installable app: offline cache + "Install app" button
+let installEvt;
+addEventListener('beforeinstallprompt',e=>{e.preventDefault();installEvt=e;$('install').hidden=false});
+$('install').onclick=async()=>{if(!installEvt)return;installEvt.prompt();await installEvt.userChoice;installEvt=null;$('install').hidden=true};
+addEventListener('appinstalled',()=>{$('install').hidden=true});
+if('serviceWorker' in navigator)addEventListener('load',()=>navigator.serviceWorker.register('sw.js').catch(()=>{}));
 </script></main></body></html>

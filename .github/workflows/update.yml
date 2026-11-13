@@ -7,7 +7,7 @@ on:
   push:
     branches: [main]
     paths:
-      - site/index.html
+      - site/**
       - fetch_octopus.py
       - .github/workflows/update.yml
 

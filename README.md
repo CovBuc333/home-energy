@@ -13,6 +13,10 @@ Daily GitHub Action pulls monthly gas and electricity usage from the Octopus Ene
 
 After that it runs daily on its own. Your site is at `https://<username>.github.io/<repo>/`.
 
+## Install as an app
+
+Open the site in Chrome, then click the **Install app** button at the top of the page (or the install icon in the address bar; on Android use ⋮ → Install app). It opens in its own window with the ⚡ icon and keeps working offline with the last data it saw.
+
 ## How old data is protected
 
 - A month already in `data.json` is only replaced if it is within the last 3 months (recent months can be incomplete or revised). Older months are never overwritten, only added if missing.
