@@ -1,0 +1,57 @@
+name: Update energy data and deploy site
+
+on:
+  schedule:
+    - cron: "17 6 * * *"   # daily, 06:17 UTC
+  workflow_dispatch:        # "Run workflow" button
+  push:
+    branches: [main]
+    paths:
+      - site/index.html
+      - fetch_octopus.py
+      - .github/workflows/update.yml
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Fetch Octopus data and merge into site/data.json
+        env:
+          OCTOPUS_API_KEY: ${{ secrets.OCTOPUS_API_KEY }}
+          OCTOPUS_ACCOUNT: ${{ secrets.OCTOPUS_ACCOUNT }}
+          GAS_UNIT: m3   # change to kwh if your gas meter already reports kWh
+        run: python fetch_octopus.py
+
+      - name: Commit data (keeps full history in git)
+        run: |
+          git config user.name "energy-bot"
+          git config user.email "energy-bot@users.noreply.github.com"
+          git add site/data.json
+          git diff --cached --quiet || (git commit -m "Update energy data" && git push)
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - id: deploy
+        uses: actions/deploy-pages@v4

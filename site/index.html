@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Home energy usage</title>
+<style>
+:root{--bg:#f6f5fb;--card:#fff;--tx:#1d1a2e;--mut:#6b6880;--bd:#e2e0ee;--el:#3b82f6;--gs:#f97316;--up:#d9480f;--dn:#2b9348}
+@media(prefers-color-scheme:dark){:root{--bg:#14121f;--card:#1e1b2e;--tx:#efedf8;--mut:#9c98b3;--bd:#34304a;--up:#ff8a5c;--dn:#4cc275}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font:15px/1.45 system-ui,sans-serif}
+main{max-width:980px;margin:0 auto;padding:16px}
+h1{font-size:22px;margin:8px 0 2px}
+h2{font-size:17px;margin:0 0 8px}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:14px;padding:14px;margin-bottom:14px}
+.mut{color:var(--mut);font-size:13px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px}
+.verdict{font-size:15px;margin:2px 0 10px}
+.chart{position:relative;height:280px}
+.scroll{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:13px;white-space:nowrap}
+th,td{padding:6px 8px;border-bottom:1px solid var(--bd);text-align:right}
+th:first-child,td:first-child{text-align:left}
+tfoot td{font-weight:700}
+.up{color:var(--up)}.dn{color:var(--dn)}
+.dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:6px}
+.row{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;align-items:end}
+label{display:block;font-size:12px;color:var(--mut);margin-bottom:3px}
+select{font:inherit;padding:8px 10px;border-radius:8px;border:1px solid var(--bd);background:var(--bg);color:var(--tx);width:100%}
+</style></head><body><main>
+<h1>🏠 Home energy usage</h1>
+<p class="mut" id="msg">Loading…</p>
+
+<div id="app" hidden>
+ <section class="card">
+  <h2>Gas vs electricity, year on year</h2>
+  <p class="mut" id="span"></p>
+  <div class="chart"><canvas id="cs"></canvas></div>
+ </section>
+ <div class="grid" id="fuels"></div>
+
+ <section class="card" style="margin-top:14px">
+  <h2>Month by month</h2>
+  <div class="row">
+   <div><label>Fuel</label><select id="fuel"><option value="electricity">Electricity</option><option value="gas">Gas</option></select></div>
+   <div><label>Month</label><select id="month"></select></div>
+   <div><label>Compare year</label><select id="ya"></select></div>
+   <div><label>Against year</label><select id="yb"></select></div>
+  </div>
+  <div class="chart" style="margin-top:12px"><canvas id="cm"></canvas></div>
+  <div class="scroll" id="tbl" style="margin-top:10px"></div>
+ </section>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script>
+const $=id=>document.getElementById(id);
+const MN=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+const COL=['#e5007d','#3b82f6','#f59e0b','#10b981','#8b5cf6','#ef4444','#14b8a6','#a16207','#64748b','#ec4899'];
+const NAME={electricity:'Electricity',gas:'Gas'};
+const GASF=11.2; // approx kWh per m³ for SMETS2 gas meters
+let D,years=[],charts={},LY,LM;
+
+fetch('data.json?'+Date.now()).then(r=>{if(!r.ok)throw 0;return r.json()}).then(j=>{D=j;start()})
+ .catch(()=>{$('msg').textContent='No data yet. In GitHub: Actions → Update energy data and deploy site → Run workflow.'});
+
+const key=(y,m)=>y+'-'+String(m+1).padStart(2,'0');
+function val(f,y,m){const v=D[f][key(y,m)];if(v==null)return null;return f==='gas'&&D.gas_unit==='m3'?v*GASF:v}
+const fmt=v=>v==null?'–':Math.round(v).toLocaleString();
+const pct=(a,b)=>(a==null||!b)?null:(a-b)/b*100;
+function pctHtml(p){if(p==null)return '–';return `<span class="${p>0?'up':'dn'}">${p>0?'+':''}${p.toFixed(1)}%</span>`}
+
+// latest complete month: the newest month in the data, stepping back if it is still the current month
+function lastComplete(){
+  const ks=[...Object.keys(D.electricity),...Object.keys(D.gas)].sort(),k=ks[ks.length-1];
+  const n=new Date(),cur=n.getFullYear()+'-'+String(n.getMonth()+1).padStart(2,'0');
+  let y=+k.slice(0,4),m=+k.slice(5)-1;
+  if(k>=cur){m--;if(m<0){y--;m=11}}
+  return {y,m};
+}
+// total Jan..m for a year, only if every month in that span has data (avoids misleading part-years)
+function span(f,y,m){let s=0;for(let i=0;i<=m;i++){const v=val(f,y,i);if(v==null)return null;s+=v}return s}
+function full(f,y){return span(f,y,11)}
+
+function start(){
+  const ys=new Set();for(const f of['electricity','gas'])for(const k in D[f])ys.add(+k.slice(0,4));
+  years=[...ys].sort();
+  if(!years.length){$('msg').textContent='No data yet. In GitHub: Actions → Update energy data and deploy site → Run workflow.';return}
+  ({y:LY,m:LM}=lastComplete());
+  $('msg').textContent=D.updated?'Last updated '+new Date(D.updated).toLocaleString('en-GB',{dateStyle:'medium',timeStyle:'short'}):'';
+  $('app').hidden=false;
+  summary();
+  $('month').innerHTML='<option value="all">All months</option>'+MN.map((m,i)=>`<option value="${i}">${m}</option>`).join('');
+  const yo=years.map(y=>`<option>${y}</option>`).join('');
+  $('ya').innerHTML=yo;$('yb').innerHTML=yo;
+  $('ya').value=LY;$('yb').value=years[Math.max(0,years.indexOf(LY)-1)];
+  for(const id of['fuel','month','ya','yb'])$(id).onchange=detail;
+  detail();
+}
+
+function draw(id,cfg){
+  if(charts[id])charts[id].destroy();
+  const tx=getComputedStyle(document.documentElement).getPropertyValue('--mut');
+  cfg.options={responsive:true,maintainAspectRatio:false,color:tx,
+    scales:{x:{ticks:{color:tx}},y:{ticks:{color:tx},title:{display:true,text:'kWh',color:tx}}},...cfg.options};
+  charts[id]=new Chart($(id),cfg);
+}
+
+function summary(){
+  const label=`Jan–${MN[LM]}`;
+  $('span').textContent=`Like-for-like: every year is compared over ${label} only, so ${LY} isn’t penalised for being unfinished. Years missing any of those months are left out.`;
+  const rows={};
+  for(const f of['electricity','gas'])rows[f]=years.map(y=>({y,s:span(f,y,LM),fy:full(f,y)}));
+  const shown=years.filter(y=>rows.electricity.find(r=>r.y===y).s!=null||rows.gas.find(r=>r.y===y).s!=null);
+  draw('cs',{type:'bar',data:{labels:shown.map(String),datasets:[
+    {label:'Electricity',backgroundColor:'#3b82f6',data:shown.map(y=>rows.electricity.find(r=>r.y===y).s)},
+    {label:'Gas',backgroundColor:'#f97316',data:shown.map(y=>rows.gas.find(r=>r.y===y).s)}]}});
+  let html='';
+  for(const f of['electricity','gas']){
+    const rs=rows[f],withS=rs.filter(r=>r.s!=null);
+    const cur=rs.find(r=>r.y===LY),prev=rs.find(r=>r.y===LY-1);
+    let v='Not enough data yet for a like-for-like comparison.';
+    if(cur&&cur.s!=null){
+      const rank=[...withS].sort((a,b)=>b.s-a.s).findIndex(r=>r.y===LY)+1,n=withS.length;
+      const p=prev&&prev.s!=null?pct(cur.s,prev.s):null;
+      v=`${LY} (${label}) is `+(p==null?'':`<b class="${p>0?'up':'dn'}">${Math.abs(p).toFixed(1)}% ${p>0?'higher':'lower'}</b> than ${LY-1}. `)
+        +(n>1?(rank===1?`The highest of ${n} years.`:rank===n?`The lowest of ${n} years.`:`#${rank} highest of ${n} years.`):'');
+    }
+    let t=`<table><thead><tr><th>Year</th><th>${label}</th><th>vs prev</th><th>Full year</th></tr></thead><tbody>`;
+    rs.forEach((r,i)=>{if(r.s==null&&r.fy==null)return;
+      const p=i>0?pct(r.s,rs[i-1].s):null;
+      t+=`<tr><td>${r.y}</td><td>${fmt(r.s)}</td><td>${pctHtml(p)}</td><td>${fmt(r.fy)}</td></tr>`});
+    t+='</tbody></table>';
+    html+=`<section class="card"><h2><span class="dot" style="background:var(--${f==='gas'?'gs':'el'})"></span>${NAME[f]}</h2><p class="verdict">${v}</p><div class="scroll">${t}</div></section>`;
+  }
+  $('fuels').innerHTML=html;
+}
+
+function detail(){
+  const f=$('fuel').value,mo=$('month').value,ya=+$('ya').value,yb=+$('yb').value;
+  const ys=years.filter(y=>Array.from({length:12},(_,m)=>val(f,y,m)).some(v=>v!=null));
+  if(mo==='all'){
+    draw('cm',{type:'line',data:{labels:MN,datasets:ys.map((y,i)=>({label:y,borderColor:COL[i%10],backgroundColor:COL[i%10],tension:.25,data:Array.from({length:12},(_,m)=>val(f,y,m))}))}});
+  }else{
+    const m=+mo;
+    draw('cm',{type:'bar',data:{labels:ys,datasets:[{label:MN[m]+' kWh',backgroundColor:f==='gas'?'#f97316':'#3b82f6',data:ys.map(y=>val(f,y,m))}]},options:{plugins:{legend:{display:false}}}});
+  }
+  let h='<table><thead><tr><th></th>'+ys.map(y=>`<th>${y}</th>`).join('')+`<th>${ya} vs ${yb}</th></tr></thead><tbody>`;
+  for(let m=0;m<12;m++){
+    const a=val(f,ya,m),b=val(f,yb,m);
+    h+=`<tr><td>${MN[m]}</td>`+ys.map(y=>`<td>${fmt(val(f,y,m))}</td>`).join('')+`<td>${pctHtml(pct(a,b))}</td></tr>`;
+  }
+  const sa=span(f,ya,LM),sb=span(f,yb,LM);
+  h+=`</tbody><tfoot><tr><td>Jan–${MN[LM]}</td>`+ys.map(y=>`<td>${fmt(span(f,y,LM))}</td>`).join('')+`<td>${pctHtml(pct(sa,sb))}</td></tr></tfoot></table>`;
+  $('tbl').innerHTML=h+`<p class="mut">Monthly figures in kWh. The latest month may be incomplete.`+(f==='gas'&&D.gas_unit==='m3'?` Gas converted from m³ at about ${GASF} kWh/m³.`:'')+'</p>';
+}
+</script></main></body></html>
