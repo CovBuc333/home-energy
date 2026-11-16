@@ -26,7 +26,7 @@ pip install openpyxl
 python tools/import_history.py Energy_Usage.xlsx
 ```
 
-Only monthly totals are saved to `site/data.json`; the export itself is never committed (`*.xlsx` is git-ignored), because half-hourly data shows when the house is occupied. Months with missing readings are estimated (scaled up from partial readings, or from the usual seasonal pattern), kept separate from real readings and marked with `~` on the site. The **Fill gaps in older years with estimates** switch turns them off. The page's *About the data* section lists every estimated month.
+Only monthly and weekly totals are saved to `site/data.json` (weekly only for complete Monday–Sunday weeks; from December 2024 the daily job fetches weeks from the API). Date ranges that look wrong can be dropped via `EXCLUDE` in the script (Jan–May 2021 electricity is excluded). The export itself is never committed (`*.xlsx` is git-ignored), because half-hourly data shows when the house is occupied. Months with missing readings are estimated (scaled up from partial readings, or from the usual seasonal pattern), kept separate from real readings and marked with `~` on the site. The **Fill gaps in older years with estimates** switch turns them off. The page's *About the data* section lists every estimated month.
 
 ## How old data is protected
 

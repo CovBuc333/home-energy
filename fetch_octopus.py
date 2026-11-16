@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Pull monthly Octopus Energy usage and merge it into site/data.json.
+"""Pull monthly and weekly Octopus Energy usage and merge it into site/data.json.
 
 History is never overwritten: a month already in data.json is only replaced
 if it falls inside the last REFRESH_MONTHS months (recent months can be
@@ -16,6 +16,7 @@ from datetime import datetime, timedelta, timezone
 BASE = "https://api.octopus.energy/v1"
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "site", "data.json")
 REFRESH_MONTHS = 3
+REFRESH_WEEKS = 8
 
 
 def get(url, auth):
@@ -64,6 +65,17 @@ def refresh_cutoff(today=None):
     return f"{y}-{m:02d}"
 
 
+def week_key(iso):
+    """Monday (local date) of the week an interval starts in, e.g. '2026-11-09'."""
+    d = datetime.fromisoformat(iso[:10]).date()
+    return (d - timedelta(days=d.weekday())).isoformat()
+
+
+def week_cutoff(today=None):
+    today = (today or datetime.now(timezone.utc)).date()
+    return (today - timedelta(days=today.weekday(), weeks=REFRESH_WEEKS)).isoformat()
+
+
 def merge(old, new, cutoff):
     """Add new months; only overwrite months at or after cutoff."""
     changed = False
@@ -95,20 +107,33 @@ def main():
     cutoff = refresh_cutoff()
     fetched, errors = 0, 0
 
+    weekly = data.setdefault("weekly", {})
+    wk_from = data.get("weekly_api_from", "")   # older weeks come from the imported export
+    wk_cutoff = week_cutoff()
+
     for fuel, paths in meters.items():
-        new = {}
+        new, new_wk = {}, {}
         for path in paths:
-            url = (f"{BASE}/{path}/consumption/?group_by=month&page_size=25000"
-                   "&period_from=2015-01-01T00:00:00Z&order_by=period")
+            base = f"{BASE}/{path}/consumption/?page_size=25000&period_from=2015-01-01T00:00:00Z&order_by=period"
             try:
-                for r in all_pages(url, auth):
+                for r in all_pages(base + "&group_by=month", auth):
                     k = month_key(r["interval_start"])
                     new[k] = new.get(k, 0) + r["consumption"]
                 fetched += 1
             except Exception as e:  # keep going; other meters may work
                 errors += 1
                 print(f"warning: {fuel} meter failed: {e}", file=sys.stderr)
+                continue
+            try:
+                for r in all_pages(base + "&group_by=week", auth):
+                    k = week_key(r["interval_start"])
+                    if k >= wk_from:
+                        new_wk[k] = new_wk.get(k, 0) + r["consumption"]
+            except Exception as e:  # weekly is a bonus; monthly still saved
+                print(f"warning: {fuel} weekly data failed: {e}", file=sys.stderr)
         changed |= merge(data[fuel], new, cutoff)
+        changed |= merge(weekly.setdefault(fuel, {}), new_wk, wk_cutoff)
+        weekly[fuel] = dict(sorted(weekly[fuel].items()))
 
     if fetched == 0:
         print("No meter data fetched; leaving data.json untouched.", file=sys.stderr)

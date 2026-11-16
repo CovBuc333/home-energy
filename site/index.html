@@ -38,11 +38,26 @@ header{display:flex;align-items:center;justify-content:space-between;gap:10px}
 label.toggle{display:flex;gap:8px;align-items:center;font-size:13px;color:var(--tx);margin:0 0 10px;cursor:pointer}
 label.toggle input{width:16px;height:16px;margin:0;accent-color:#f59e0b}
 #notes{margin:0;padding-left:18px}#notes li{margin:4px 0}
+.tall{max-height:460px;overflow:auto}
+.tall thead th{position:sticky;top:0;background:var(--card)}
 </style></head><body><main>
 <header><h1>⚡ Home energy usage</h1><button id="install" hidden>Install app</button></header>
 <p class="mut" id="msg">Loading…</p>
 
 <div id="app" hidden>
+ <section class="card">
+  <h2 id="dtitle">Usage by month</h2>
+  <div class="row">
+   <div><label>Fuel</label><select id="fuel"><option value="gas" selected>Gas</option><option value="electricity">Electricity</option></select></div>
+   <div><label>View</label><select id="view"><option value="month" selected>Months</option><option value="week">Weeks</option></select></div>
+   <div><label id="plabel">Month</label><select id="month"></select></div>
+   <div><label>Compare year</label><select id="ya"></select></div>
+   <div><label>Against year</label><select id="yb"></select></div>
+  </div>
+  <div class="chart" style="margin-top:12px"><canvas id="cm"></canvas></div>
+  <div class="scroll" id="tbl" style="margin-top:10px"></div>
+ </section>
+
  <section class="card">
   <h2>Gas vs electricity, year on year</h2>
   <p class="mut" id="span"></p>
@@ -51,19 +66,7 @@ label.toggle input{width:16px;height:16px;margin:0;accent-color:#f59e0b}
  </section>
  <div class="grid" id="fuels"></div>
 
- <section class="card" style="margin-top:14px">
-  <h2>Month by month</h2>
-  <div class="row">
-   <div><label>Fuel</label><select id="fuel"><option value="electricity">Electricity</option><option value="gas">Gas</option></select></div>
-   <div><label>Month</label><select id="month"></select></div>
-   <div><label>Compare year</label><select id="ya"></select></div>
-   <div><label>Against year</label><select id="yb"></select></div>
-  </div>
-  <div class="chart" style="margin-top:12px"><canvas id="cm"></canvas></div>
-  <div class="scroll" id="tbl" style="margin-top:10px"></div>
- </section>
-
- <section class="card" id="about" hidden>
+ <section class="card" id="about" style="margin-top:14px" hidden>
   <h2>About the data</h2>
   <ul class="mut" id="notes"></ul>
  </section>
@@ -76,7 +79,8 @@ const MN=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec
 const COL=['#e5007d','#3b82f6','#f59e0b','#10b981','#8b5cf6','#ef4444','#14b8a6','#a16207','#64748b','#ec4899'];
 const NAME={electricity:'Electricity',gas:'Gas'};
 const GASF=11.2; // approx kWh per m³ for SMETS2 gas meters
-let D,years=[],charts={},LY,LM;
+let D,years=[],charts={},LY,LM,WI={},LWY,LWW;
+const pick={month:'all',week:'all'}; // remembers the period choice for each view
 
 fetch('data.json',{cache:'no-store'}).then(r=>{if(!r.ok)throw 0;return r.json()}).then(j=>{D=j;start()})
  .catch(e=>{$('msg').textContent=D?'Could not display the data: '+(e&&e.message||e):'No data yet. In GitHub: Actions → Update energy data and deploy site → Run workflow.'});
@@ -113,6 +117,33 @@ function lastComplete(){
 function span(f,y,m){let s=0;for(let i=0;i<=m;i++){const v=val(f,y,i);if(v==null)return null;s+=v}return s}
 function full(f,y){return span(f,y,11)}
 
+// ---- weekly data: Monday-start weeks keyed by date, shown by ISO week number ----
+function isoWeek(mon){ // 'YYYY-MM-DD' (a Monday) -> {y, w}
+  const d=new Date(mon+'T12:00:00Z');d.setUTCDate(d.getUTCDate()+3); // that week's Thursday
+  const y=d.getUTCFullYear();
+  return {y,w:1+Math.floor((d-Date.UTC(y,0,1))/864e5/7)};
+}
+function mondayOf(y,w){ // date of the Monday of ISO week w in year y
+  const j4=new Date(Date.UTC(y,0,4)),d=new Date(j4);
+  d.setUTCDate(4-((j4.getUTCDay()+6)%7)+(w-1)*7);return d;
+}
+const wkLabel=(y,w)=>mondayOf(y,w).toLocaleDateString('en-GB',{day:'numeric',month:'short',timeZone:'UTC'});
+function buildWeeks(){
+  let last='';
+  for(const f of['electricity','gas']){
+    WI[f]={};
+    for(const [k,v] of Object.entries((D.weekly||{})[f]||{})){
+      const {y,w}=isoWeek(k);(WI[f][y]=WI[f][y]||{})[w]=conv(f,v);if(k>last)last=k;
+    }
+  }
+  if(!last)return;
+  // latest complete week: step back if the newest week hasn't finished yet
+  const lm=new Date(last+'T12:00:00Z');if(lm.getTime()+7*864e5>Date.now())lm.setUTCDate(lm.getUTCDate()-7);
+  ({y:LWY,w:LWW}=isoWeek(lm.toISOString().slice(0,10)));
+}
+const wval=(f,y,w)=>(WI[f][y]||{})[w]??null;
+const hasWeeks=()=>!!LWY;
+
 function start(){
   const ys=new Set();for(const f of['electricity','gas'])for(const k of[...Object.keys(D[f]),...Object.keys(EST(f))])ys.add(+k.slice(0,4));
   years=[...ys].sort();
@@ -129,13 +160,27 @@ function start(){
       .map(n=>`<li>${n.replace(/[<>&]/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;'})[c])}</li>`).join('');
     $('about').hidden=false;
   }
+  buildWeeks();
+  if(!hasWeeks())$('view').disabled=true;
   summary();
-  $('month').innerHTML='<option value="all">All months</option>'+MN.map((m,i)=>`<option value="${i}">${m}</option>`).join('');
   const yo=years.map(y=>`<option>${y}</option>`).join('');
   $('ya').innerHTML=yo;$('yb').innerHTML=yo;
   $('ya').value=LY;$('yb').value=years[Math.max(0,years.indexOf(LY)-1)];
-  for(const id of['fuel','month','ya','yb'])$(id).onchange=detail;
+  periods();
+  $('view').onchange=()=>{periods();detail()};
+  $('month').onchange=()=>{pick[$('view').value]=$('month').value;detail()};
+  for(const id of['fuel','ya','yb'])$(id).onchange=detail;
   detail();
+}
+
+// period dropdown follows the view: months, or ISO weeks 1-53
+function periods(){
+  const wk=$('view').value==='week';
+  $('plabel').textContent=wk?'Week':'Month';
+  $('month').innerHTML=wk
+    ?'<option value="all">All weeks</option>'+Array.from({length:53},(_,i)=>`<option value="${i+1}">Week ${i+1} (w/c ${wkLabel(LWY,i+1)})</option>`).join('')
+    :'<option value="all">All months</option>'+MN.map((m,i)=>`<option value="${i}">${m}</option>`).join('');
+  $('month').value=pick[$('view').value];
 }
 
 function draw(id,cfg){
@@ -184,6 +229,8 @@ function summary(){
 }
 
 function detail(){
+  if($('view').value==='week')return detailWeeks();
+  $('dtitle').textContent='Usage by month';
   const f=$('fuel').value,mo=$('month').value,ya=+$('ya').value,yb=+$('yb').value;
   const ys=years.filter(y=>Array.from({length:12},(_,m)=>val(f,y,m)).some(v=>v!=null));
   if(mo==='all'){
@@ -205,7 +252,42 @@ function detail(){
   const sa=span(f,ya,LM),sb=span(f,yb,LM);
   h+=`</tbody><tfoot><tr><td>Jan–${MN[LM]}</td>`+ys.map(y=>`<td>${fmtE(span(f,y,LM),anyEst(f,y,LM))}</td>`).join('')+`<td>${pctHtml(pct(sa,sb),anyEst(f,ya,LM)||anyEst(f,yb,LM))}</td></tr></tfoot></table>`;
   const shownEst=ys.some(y=>anyEst(f,y,11));
+  $('tbl').className='scroll';
   $('tbl').innerHTML=h+`<p class="mut">Monthly figures in kWh. The latest month may be incomplete.`+(shownEst?' ~ = estimated (dashed lines and lighter bars in the chart); see About the data.':'')+(f==='gas'&&D.gas_unit==='m3'?` Gas converted from m³ at about ${GASF} kWh/m³.`:'')+'</p>';
+}
+
+function detailWeeks(){
+  $('dtitle').textContent='Usage by week';
+  const f=$('fuel').value,wo=$('month').value,ya=+$('ya').value,yb=+$('yb').value;
+  const ys=years.filter(y=>WI[f][y]&&Object.keys(WI[f][y]).length);
+  const W=Array.from({length:53},(_,i)=>i+1);
+  if(wo==='all'){
+    draw('cm',{type:'line',data:{labels:W.map(w=>'Wk '+w),datasets:ys.map((y,i)=>{const c=COL[i%10];
+      return {label:y,borderColor:c,backgroundColor:c,tension:.25,pointRadius:1.5,borderWidth:2,data:W.map(w=>wval(f,y,w))}})},
+      options:{interaction:{mode:'index',intersect:false},
+        scales:{x:{ticks:{maxTicksLimit:14}}},
+        plugins:{tooltip:{callbacks:{title:t=>`${t[0].label} (w/c ${wkLabel(+t[0].dataset.label,t[0].dataIndex+1)})`,label:c=>`${c.dataset.label}: ${fmt(c.raw)} kWh`}}}}});
+  }else{
+    const w=+wo,c=f==='gas'?'#f97316':'#3b82f6';
+    draw('cm',{type:'bar',data:{labels:ys,datasets:[{label:'Week '+w,backgroundColor:c,data:ys.map(y=>wval(f,y,w))}]},
+      options:{plugins:{legend:{display:false},tooltip:{callbacks:{label:x=>`w/c ${wkLabel(+x.label,w)}: ${fmt(x.raw)} kWh`}}}}});
+  }
+  // table: every week that has data in any year
+  const rowsW=W.filter(w=>ys.some(y=>wval(f,y,w)!=null));
+  let h='<table><thead><tr><th>Week</th>'+ys.map(y=>`<th>${y}</th>`).join('')+`<th>${ya} vs ${yb}</th></tr></thead><tbody>`;
+  for(const w of rowsW){
+    h+=`<tr><td>${w} <span class="mut">${wkLabel(LWY,w)}</span></td>`+ys.map(y=>`<td>${fmt(wval(f,y,w))}</td>`).join('')
+      +`<td>${pctHtml(pct(wval(f,ya,w),wval(f,yb,w)))}</td></tr>`;
+  }
+  // like-for-like footer: weeks 1..latest complete week, only where both years have that week
+  let sa=0,sb=0,n=0;
+  for(let w=1;w<=LWW;w++){const a=wval(f,ya,w),b=wval(f,yb,w);if(a!=null&&b!=null){sa+=a;sb+=b;n++}}
+  const tot=y=>{let s=0;for(let w=1;w<=LWW;w++){const v=wval(f,y,w);if(v==null)return null;s+=v}return s};
+  h+=`</tbody><tfoot><tr><td>Wk 1–${LWW}</td>`+ys.map(y=>`<td>${fmt(tot(y))}</td>`).join('')
+    +`<td title="Compares the ${n} weeks both years have">${pctHtml(n?pct(sa,sb):null)}</td></tr></tfoot></table>`;
+  $('tbl').className='scroll tall';
+  $('tbl').innerHTML=h+`<p class="mut">Weekly figures in kWh, Monday to Sunday, numbered by ISO week (dates shown are for ${LWY}). Weeks with missing readings are left blank rather than estimated, and the latest week may be incomplete. The ${ya} vs ${yb} total compares only the ${n} weeks both years have.`
+    +(f==='gas'&&D.gas_unit==='m3'?` Gas converted from m³ at about ${GASF} kWh/m³.`:'')+'</p>';
 }
 
 // installable app: offline cache + "Install app" button
