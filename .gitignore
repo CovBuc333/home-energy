@@ -1,0 +1,4 @@
+# raw half-hourly exports stay private
+*.xlsx
+*.csv
+__pycache__/

@@ -17,6 +17,17 @@ After that it runs daily on its own. Your site is at `https://<username>.github.
 
 Open the site in Chrome, then click the **Install app** button at the top of the page (or the install icon in the address bar; on Android use ⋮ → Install app). It opens in its own window with the ⚡ icon and keeps working offline with the last data it saw.
 
+## Older history (before the API's data)
+
+The Octopus API only returns usage from November 2024. Older months (2021 onwards) were imported from a half-hourly Octopus export with:
+
+```
+pip install openpyxl
+python tools/import_history.py Energy_Usage.xlsx
+```
+
+Only monthly totals are saved to `site/data.json`; the export itself is never committed (`*.xlsx` is git-ignored), because half-hourly data shows when the house is occupied. Months with missing readings are estimated (scaled up from partial readings, or from the usual seasonal pattern), kept separate from real readings and marked with `~` on the site. The **Fill gaps in older years with estimates** switch turns them off. The page's *About the data* section lists every estimated month.
+
 ## How old data is protected
 
 - A month already in `data.json` is only replaced if it is within the last 3 months (recent months can be incomplete or revised). Older months are never overwritten, only added if missing.

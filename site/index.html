@@ -34,6 +34,10 @@ label{display:block;font-size:12px;color:var(--mut);margin-bottom:3px}
 select{font:inherit;padding:8px 10px;border-radius:8px;border:1px solid var(--bd);background:var(--bg);color:var(--tx);width:100%}
 header{display:flex;align-items:center;justify-content:space-between;gap:10px}
 #install{font:inherit;font-size:13px;font-weight:600;padding:7px 12px;border-radius:999px;border:0;background:#f59e0b;color:#1d1a2e;cursor:pointer}
+.est{font-style:italic;color:var(--mut)}
+label.toggle{display:flex;gap:8px;align-items:center;font-size:13px;color:var(--tx);margin:0 0 10px;cursor:pointer}
+label.toggle input{width:16px;height:16px;margin:0;accent-color:#f59e0b}
+#notes{margin:0;padding-left:18px}#notes li{margin:4px 0}
 </style></head><body><main>
 <header><h1>⚡ Home energy usage</h1><button id="install" hidden>Install app</button></header>
 <p class="mut" id="msg">Loading…</p>
@@ -42,6 +46,7 @@ header{display:flex;align-items:center;justify-content:space-between;gap:10px}
  <section class="card">
   <h2>Gas vs electricity, year on year</h2>
   <p class="mut" id="span"></p>
+  <label class="toggle" id="esttoggle" hidden><input type="checkbox" id="useest" checked> Fill gaps in older years with estimates</label>
   <div class="chart"><canvas id="cs"></canvas></div>
  </section>
  <div class="grid" id="fuels"></div>
@@ -56,6 +61,11 @@ header{display:flex;align-items:center;justify-content:space-between;gap:10px}
   </div>
   <div class="chart" style="margin-top:12px"><canvas id="cm"></canvas></div>
   <div class="scroll" id="tbl" style="margin-top:10px"></div>
+ </section>
+
+ <section class="card" id="about" hidden>
+  <h2>About the data</h2>
+  <ul class="mut" id="notes"></ul>
  </section>
 </div>
 
@@ -72,10 +82,24 @@ fetch('data.json',{cache:'no-store'}).then(r=>{if(!r.ok)throw 0;return r.json()}
  .catch(e=>{$('msg').textContent=D?'Could not display the data: '+(e&&e.message||e):'No data yet. In GitHub: Actions → Update energy data and deploy site → Run workflow.'});
 
 const key=(y,m)=>y+'-'+String(m+1).padStart(2,'0');
-function val(f,y,m){const v=D[f][key(y,m)];if(v==null)return null;return f==='gas'&&D.gas_unit==='m3'?v*GASF:v}
+let useEst=true;
+try{useEst=localStorage.getItem('useEst')!=='0'}catch(e){}
+const EST=f=>(D.estimates||{})[f]||{}, QUAL=f=>(D.quality||{})[f]||{};
+const conv=(f,v)=>f==='gas'&&D.gas_unit==='m3'?v*GASF:v;
+// a month is "estimated" when it had missing readings and estimates are switched on
+function isEst(f,y,m){return useEst&&EST(f)[key(y,m)]!=null}
+function val(f,y,m){
+  const k=key(y,m),e=EST(f)[k];
+  if(useEst&&e!=null)return conv(f,e);
+  if(QUAL(f)[k]!=null)return null; // partial month: never shown as if it were complete
+  const v=D[f][k];return v==null?null:conv(f,v);
+}
+function anyEst(f,y,m){for(let i=0;i<=m;i++)if(isEst(f,y,i))return true;return false}
 const fmt=v=>v==null?'–':Math.round(v).toLocaleString();
+const fmtE=(v,e)=>v==null?'–':e?`<span class="est" title="Includes estimated readings">~${fmt(v)}</span>`:fmt(v);
 const pct=(a,b)=>(a==null||!b)?null:(a-b)/b*100;
-function pctHtml(p){if(p==null)return '–';return `<span class="${p>0?'up':'dn'}">${p>0?'+':''}${p.toFixed(1)}%</span>`}
+function pctHtml(p,e){if(p==null)return '–';return `<span class="${p>0?'up':'dn'}"${e?' style="font-style:italic" title="Includes estimated months"':''}>${p>0?'+':''}${p.toFixed(1)}%</span>`}
+const fade=c=>c+'59'; // lighter colour for estimated bars and points
 
 // latest complete month: the newest month in the data, stepping back if it is still the current month
 function lastComplete(){
@@ -90,12 +114,21 @@ function span(f,y,m){let s=0;for(let i=0;i<=m;i++){const v=val(f,y,i);if(v==null
 function full(f,y){return span(f,y,11)}
 
 function start(){
-  const ys=new Set();for(const f of['electricity','gas'])for(const k in D[f])ys.add(+k.slice(0,4));
+  const ys=new Set();for(const f of['electricity','gas'])for(const k of[...Object.keys(D[f]),...Object.keys(EST(f))])ys.add(+k.slice(0,4));
   years=[...ys].sort();
   if(!years.length){$('msg').textContent='No data yet. In GitHub: Actions → Update energy data and deploy site → Run workflow.';return}
   ({y:LY,m:LM}=lastComplete());
   $('msg').textContent=D.updated?'Last updated '+new Date(D.updated).toLocaleString('en-GB',{dateStyle:'medium',timeStyle:'short'}):'';
   $('app').hidden=false;
+  const hasEst=Object.keys(EST('electricity')).length+Object.keys(EST('gas')).length>0;
+  $('esttoggle').hidden=!hasEst;
+  $('useest').checked=useEst;
+  $('useest').onchange=()=>{useEst=$('useest').checked;try{localStorage.setItem('useEst',useEst?'1':'0')}catch(e){}summary();detail()};
+  if(D.notes&&D.notes.length){
+    $('notes').innerHTML=[...D.notes,'~ marks a total that includes estimated months. Turn off “Fill gaps” to compare only years with complete readings.']
+      .map(n=>`<li>${n.replace(/[<>&]/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;'})[c])}</li>`).join('');
+    $('about').hidden=false;
+  }
   summary();
   $('month').innerHTML='<option value="all">All months</option>'+MN.map((m,i)=>`<option value="${i}">${m}</option>`).join('');
   const yo=years.map(y=>`<option>${y}</option>`).join('');
@@ -115,13 +148,16 @@ function draw(id,cfg){
 
 function summary(){
   const label=`Jan–${MN[LM]}`;
-  $('span').textContent=`Like-for-like: every year is compared over ${label} only, so ${LY} isn’t penalised for being unfinished. Years missing any of those months are left out.`;
+  $('span').textContent=`Like-for-like: every year is compared over ${label} only, so ${LY} isn’t penalised for being unfinished. `
+    +(useEst?'Lighter bars and ~ totals include estimated months.':'Years missing any of those months are left out.');
   const rows={};
-  for(const f of['electricity','gas'])rows[f]=years.map(y=>({y,s:span(f,y,LM),fy:full(f,y)}));
+  for(const f of['electricity','gas'])rows[f]=years.map(y=>({y,s:span(f,y,LM),fy:full(f,y),es:anyEst(f,y,LM),fe:anyEst(f,y,11)}));
   const shown=years.filter(y=>rows.electricity.find(r=>r.y===y).s!=null||rows.gas.find(r=>r.y===y).s!=null);
-  draw('cs',{type:'bar',data:{labels:shown.map(String),datasets:[
-    {label:'Electricity',backgroundColor:'#3b82f6',data:shown.map(y=>rows.electricity.find(r=>r.y===y).s)},
-    {label:'Gas',backgroundColor:'#f97316',data:shown.map(y=>rows.gas.find(r=>r.y===y).s)}]}});
+  const ds=(f,name,c)=>{const r=y=>rows[f].find(x=>x.y===y);
+    return {label:name,backgroundColor:shown.map(y=>r(y).es?fade(c):c),borderColor:c,borderWidth:shown.map(y=>r(y).es?1.5:0),data:shown.map(y=>r(y).s)}};
+  draw('cs',{type:'bar',data:{labels:shown.map(String),datasets:[ds('electricity','Electricity','#3b82f6'),ds('gas','Gas','#f97316')]},
+    options:{plugins:{legend:{labels:{boxWidth:12}},tooltip:{callbacks:{label:c=>{const r=rows[c.dataset.label==='Gas'?'gas':'electricity'].find(x=>x.y===+c.label);
+      return `${c.dataset.label}: ${r.es?'~':''}${fmt(c.raw)} kWh${r.es?' (incl. estimates)':''}`}}}}}});
   let html='';
   for(const f of['electricity','gas']){
     const rs=rows[f],withS=rs.filter(r=>r.s!=null);
@@ -130,13 +166,17 @@ function summary(){
     if(cur&&cur.s!=null){
       const rank=[...withS].sort((a,b)=>b.s-a.s).findIndex(r=>r.y===LY)+1,n=withS.length;
       const p=prev&&prev.s!=null?pct(cur.s,prev.s):null;
-      v=`${LY} (${label}) is `+(p==null?'':`<b class="${p>0?'up':'dn'}">${Math.abs(p).toFixed(1)}% ${p>0?'higher':'lower'}</b> than ${LY-1}. `)
+      const avg=withS.filter(r=>r.y!==LY);
+      const pa=avg.length?pct(cur.s,avg.reduce((a,r)=>a+r.s,0)/avg.length):null;
+      v=`${LY} (${label}) is `+(p==null?'':`<b class="${p>0?'up':'dn'}">${Math.abs(p).toFixed(1)}% ${p>0?'higher':'lower'}</b> than ${LY-1}`)
+        +(pa==null||avg.length<2?'. ':`${p==null?'':' and '}<b class="${pa>0?'up':'dn'}">${Math.abs(pa).toFixed(1)}% ${pa>0?'above':'below'}</b> the `
+          +(avg[avg.length-1].y-avg[0].y===avg.length-1?`${avg[0].y}–${avg[avg.length-1].y}`:avg.map(r=>r.y).join('/'))+' average. ')
         +(n>1?(rank===1?`The highest of ${n} years.`:rank===n?`The lowest of ${n} years.`:`#${rank} highest of ${n} years.`):'');
     }
     let t=`<table><thead><tr><th>Year</th><th>${label}</th><th>vs prev</th><th>Full year</th></tr></thead><tbody>`;
     rs.forEach((r,i)=>{if(r.s==null&&r.fy==null)return;
       const p=i>0?pct(r.s,rs[i-1].s):null;
-      t+=`<tr><td>${r.y}</td><td>${fmt(r.s)}</td><td>${pctHtml(p)}</td><td>${fmt(r.fy)}</td></tr>`});
+      t+=`<tr><td>${r.y}</td><td>${fmtE(r.s,r.es)}</td><td>${pctHtml(p,r.es||(i>0&&rs[i-1].es))}</td><td>${fmtE(r.fy,r.fe)}</td></tr>`});
     t+='</tbody></table>';
     html+=`<section class="card"><h2><span class="dot" style="background:var(--${f==='gas'?'gs':'el'})"></span>${NAME[f]}</h2><p class="verdict">${v}</p><div class="scroll">${t}</div></section>`;
   }
@@ -147,19 +187,25 @@ function detail(){
   const f=$('fuel').value,mo=$('month').value,ya=+$('ya').value,yb=+$('yb').value;
   const ys=years.filter(y=>Array.from({length:12},(_,m)=>val(f,y,m)).some(v=>v!=null));
   if(mo==='all'){
-    draw('cm',{type:'line',data:{labels:MN,datasets:ys.map((y,i)=>({label:y,borderColor:COL[i%10],backgroundColor:COL[i%10],tension:.25,data:Array.from({length:12},(_,m)=>val(f,y,m))}))}});
+    draw('cm',{type:'line',data:{labels:MN,datasets:ys.map((y,i)=>{const c=COL[i%10],e=m=>isEst(f,y,m);
+      return {label:y,borderColor:c,backgroundColor:c,tension:.25,data:Array.from({length:12},(_,m)=>val(f,y,m)),
+        pointBackgroundColor:Array.from({length:12},(_,m)=>e(m)?'transparent':c),pointRadius:Array.from({length:12},(_,m)=>e(m)?4:3),
+        segment:{borderDash:s=>e(s.p0DataIndex)||e(s.p1DataIndex)?[5,4]:undefined}}})},
+      options:{plugins:{tooltip:{callbacks:{label:c=>`${c.dataset.label}: ${isEst(f,+c.dataset.label,c.dataIndex)?'~':''}${fmt(c.raw)} kWh${isEst(f,+c.dataset.label,c.dataIndex)?' (estimated)':''}`}}}}});
   }else{
-    const m=+mo;
-    draw('cm',{type:'bar',data:{labels:ys,datasets:[{label:MN[m]+' kWh',backgroundColor:f==='gas'?'#f97316':'#3b82f6',data:ys.map(y=>val(f,y,m))}]},options:{plugins:{legend:{display:false}}}});
+    const m=+mo,c=f==='gas'?'#f97316':'#3b82f6';
+    draw('cm',{type:'bar',data:{labels:ys,datasets:[{label:MN[m]+' kWh',backgroundColor:ys.map(y=>isEst(f,y,m)?fade(c):c),borderColor:c,borderWidth:ys.map(y=>isEst(f,y,m)?1.5:0),data:ys.map(y=>val(f,y,m))}]},
+      options:{plugins:{legend:{display:false},tooltip:{callbacks:{label:x=>`${isEst(f,+x.label,m)?'~':''}${fmt(x.raw)} kWh${isEst(f,+x.label,m)?' (estimated)':''}`}}}}});
   }
   let h='<table><thead><tr><th></th>'+ys.map(y=>`<th>${y}</th>`).join('')+`<th>${ya} vs ${yb}</th></tr></thead><tbody>`;
   for(let m=0;m<12;m++){
     const a=val(f,ya,m),b=val(f,yb,m);
-    h+=`<tr><td>${MN[m]}</td>`+ys.map(y=>`<td>${fmt(val(f,y,m))}</td>`).join('')+`<td>${pctHtml(pct(a,b))}</td></tr>`;
+    h+=`<tr><td>${MN[m]}</td>`+ys.map(y=>`<td>${fmtE(val(f,y,m),isEst(f,y,m))}</td>`).join('')+`<td>${pctHtml(pct(a,b),isEst(f,ya,m)||isEst(f,yb,m))}</td></tr>`;
   }
   const sa=span(f,ya,LM),sb=span(f,yb,LM);
-  h+=`</tbody><tfoot><tr><td>Jan–${MN[LM]}</td>`+ys.map(y=>`<td>${fmt(span(f,y,LM))}</td>`).join('')+`<td>${pctHtml(pct(sa,sb))}</td></tr></tfoot></table>`;
-  $('tbl').innerHTML=h+`<p class="mut">Monthly figures in kWh. The latest month may be incomplete.`+(f==='gas'&&D.gas_unit==='m3'?` Gas converted from m³ at about ${GASF} kWh/m³.`:'')+'</p>';
+  h+=`</tbody><tfoot><tr><td>Jan–${MN[LM]}</td>`+ys.map(y=>`<td>${fmtE(span(f,y,LM),anyEst(f,y,LM))}</td>`).join('')+`<td>${pctHtml(pct(sa,sb),anyEst(f,ya,LM)||anyEst(f,yb,LM))}</td></tr></tfoot></table>`;
+  const shownEst=ys.some(y=>anyEst(f,y,11));
+  $('tbl').innerHTML=h+`<p class="mut">Monthly figures in kWh. The latest month may be incomplete.`+(shownEst?' ~ = estimated (dashed lines and lighter bars in the chart); see About the data.':'')+(f==='gas'&&D.gas_unit==='m3'?` Gas converted from m³ at about ${GASF} kWh/m³.`:'')+'</p>';
 }
 
 // installable app: offline cache + "Install app" button
