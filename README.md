@@ -34,6 +34,10 @@ Only monthly and weekly totals are saved to `site/data.json` (weekly only for co
 - If Octopus ever stops returning old data (e.g. a meter is replaced), what you already saved stays.
 - Every update is a git commit, so earlier versions of `data.json` are always recoverable.
 
+## Outdoor temperature
+
+`fetch_weather.py` runs after the Octopus fetch and saves each day's mean outdoor temperature for the B72 area (from Open-Meteo, no key needed) to `weather.daily_mean_c` in `data.json`, back to 2021. That lets gas use be compared per heating degree day (base 15.5°C), so a cold week doesn't look like a worse boiler setting. If the weather service is down, the energy update still goes ahead.
+
 ## Settings
 
 - `GAS_UNIT` in the workflow: `m3` (default, smart gas meters, converted at about 11.2 kWh/m³) or `kwh`.

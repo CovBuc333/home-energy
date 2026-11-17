@@ -40,6 +40,10 @@ jobs:
           GAS_UNIT: m3   # change to kwh if your gas meter already reports kWh
         run: python fetch_octopus.py
 
+      - name: Add daily outdoor temperature (Open-Meteo, for weather-adjusted gas)
+        continue-on-error: true
+        run: python fetch_weather.py
+
       - name: Commit data (keeps full history in git)
         run: |
           git config user.name "energy-bot"
