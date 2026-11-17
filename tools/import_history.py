@@ -19,10 +19,11 @@ What it does
     25% <= coverage < 96.5%  -> estimate = readings scaled up to a full month
     coverage < 25% / missing -> estimate = that month's usual share of a year,
                                 scaled to the rest of that year's usage
-- Weekly totals (Monday-start weeks) are imported for complete weeks before
-  the API's weekly data begins; incomplete weeks are left out, not estimated.
+- Weekly totals (Monday-start weeks) and daily totals are imported for complete
+  weeks/days before the API's weekly/daily data begins; incomplete ones are
+  left out, not estimated.
 - The raw export itself is NOT written anywhere (half-hourly data reveals when
-  the house is occupied); only monthly and weekly totals end up in the repo.
+  the house is occupied); only monthly, weekly and daily totals end up in the repo.
 """
 import calendar
 import json
@@ -133,6 +134,7 @@ def main(xlsx):
     quality = {f: {} for f in FUELS}
     estimates = {f: {} for f in FUELS}
     weekly = data.get("weekly") or {f: {} for f in FUELS}
+    daily = data.get("daily") or {f: {} for f in FUELS}
     notes = []
 
     for fuel in FUELS:
@@ -214,6 +216,13 @@ def main(xlsx):
                 wk[mon.isoformat()] = round(sum(x[0] for x in ds), 3)
         weekly[fuel] = dict(sorted(wk.items()))
 
+        # daily totals: complete days before the API's daily data (same start as weekly)
+        dy = {k: v for k, v in daily.get(fuel, {}).items() if k >= WEEKLY_API_FROM}
+        for d, (t, n) in days[fuel].items():
+            if n >= 46 and d.isoformat() < WEEKLY_API_FROM:
+                dy[d.isoformat()] = round(t, 2)
+        daily[fuel] = dict(sorted(dy.items()))
+
         n = NAME[fuel]
         for a, b, why in EXCLUDE[fuel]:
             notes.append(f"{n} – {date.fromisoformat(a):%-d %b %Y} to {date.fromisoformat(b):%-d %b %Y} "
@@ -234,14 +243,14 @@ def main(xlsx):
 
     data["api_start"] = api_start
     data["weekly_api_from"] = WEEKLY_API_FROM
-    data["quality"], data["estimates"], data["weekly"] = quality, estimates, weekly
+    data["quality"], data["estimates"], data["weekly"], data["daily"] = quality, estimates, weekly, daily
     data["notes"] = ["Usage before November 2024 is imported from an earlier Octopus export; "
-                     "later months come from the Octopus API. Weekly figures only include complete weeks."] + notes
+                     "later months come from the Octopus API. Weekly and daily figures only include complete weeks and days."] + notes
     with open(OUT, "w") as f:
         json.dump(data, f, indent=1)
     print("\n".join(data["notes"]))
     for fuel in FUELS:
-        print(fuel, "weeks:", len(weekly[fuel]), min(weekly[fuel], default=None), "->", max(weekly[fuel], default=None))
+        print(fuel, "weeks:", len(weekly[fuel]), "days:", len(daily[fuel]), min(daily[fuel], default=None), "->", max(daily[fuel], default=None))
 
 
 if __name__ == "__main__":

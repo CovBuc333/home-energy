@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Pull monthly and weekly Octopus Energy usage and merge it into site/data.json.
+"""Pull monthly, weekly and daily Octopus Energy usage and merge it into site/data.json.
 
 History is never overwritten: a month already in data.json is only replaced
 if it falls inside the last REFRESH_MONTHS months (recent months can be
@@ -17,6 +17,7 @@ BASE = "https://api.octopus.energy/v1"
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "site", "data.json")
 REFRESH_MONTHS = 3
 REFRESH_WEEKS = 8
+REFRESH_DAYS = 14
 
 
 def get(url, auth):
@@ -110,9 +111,11 @@ def main():
     weekly = data.setdefault("weekly", {})
     wk_from = data.get("weekly_api_from", "")   # older weeks come from the imported export
     wk_cutoff = week_cutoff()
+    daily = data.setdefault("daily", {})
+    day_cutoff = (datetime.now(timezone.utc).date() - timedelta(days=REFRESH_DAYS)).isoformat()
 
     for fuel, paths in meters.items():
-        new, new_wk = {}, {}
+        new, new_wk, new_day = {}, {}, {}
         for path in paths:
             base = f"{BASE}/{path}/consumption/?page_size=25000&period_from=2015-01-01T00:00:00Z&order_by=period"
             try:
@@ -131,8 +134,17 @@ def main():
                         new_wk[k] = new_wk.get(k, 0) + r["consumption"]
             except Exception as e:  # weekly is a bonus; monthly still saved
                 print(f"warning: {fuel} weekly data failed: {e}", file=sys.stderr)
+            try:
+                for r in all_pages(base + "&group_by=day", auth):
+                    k = r["interval_start"][:10]   # local date
+                    if k >= wk_from:
+                        new_day[k] = new_day.get(k, 0) + r["consumption"]
+            except Exception as e:  # daily is a bonus too
+                print(f"warning: {fuel} daily data failed: {e}", file=sys.stderr)
         changed |= merge(data[fuel], new, cutoff)
         changed |= merge(weekly.setdefault(fuel, {}), new_wk, wk_cutoff)
+        changed |= merge(daily.setdefault(fuel, {}), new_day, day_cutoff)
+        daily[fuel] = dict(sorted(daily[fuel].items()))
         weekly[fuel] = dict(sorted(weekly[fuel].items()))
 
     if fetched == 0:
