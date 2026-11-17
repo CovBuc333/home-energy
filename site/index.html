@@ -38,6 +38,13 @@ header{display:flex;align-items:center;justify-content:space-between;gap:10px}
 label.toggle{display:flex;gap:8px;align-items:center;font-size:13px;color:var(--tx);margin:0 0 10px;cursor:pointer}
 label.toggle input{width:16px;height:16px;margin:0;accent-color:#f59e0b}
 #notes{margin:0;padding-left:18px}#notes li{margin:4px 0}
+.zbar{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-top:12px}
+.zbar[hidden]{display:none}
+.zbtns{display:flex;gap:4px}
+.zbtns button{font:inherit;font-size:13px;min-width:34px;height:30px;padding:0 9px;border-radius:8px;border:1px solid var(--bd);background:var(--bg);color:var(--tx);cursor:pointer}
+.zbtns button:disabled{opacity:.4;cursor:default}
+#zbox{position:absolute;display:none;pointer-events:none;background:rgba(245,158,11,.18);border:1px solid #f59e0b;border-radius:4px}
+#cm{cursor:crosshair}
 .tall{max-height:460px;overflow:auto}
 .tall thead th{position:sticky;top:0;background:var(--card)}
 </style></head><body><main>
@@ -54,7 +61,13 @@ label.toggle input{width:16px;height:16px;margin:0;accent-color:#f59e0b}
    <div><label>Compare year</label><select id="ya"></select></div>
    <div><label>Against year</label><select id="yb"></select></div>
   </div>
-  <div class="chart" style="margin-top:12px"><canvas id="cm"></canvas></div>
+  <div class="zbar" id="zbar" hidden>
+   <span class="mut" id="zhint">Drag across the graph to zoom in</span>
+   <span class="zbtns">
+    <button id="zl" title="Move left" aria-label="Move left">◀</button><button id="zin" title="Zoom in" aria-label="Zoom in">+</button><button id="zout" title="Zoom out" aria-label="Zoom out">−</button><button id="zr" title="Move right" aria-label="Move right">▶</button><button id="zreset">Reset</button>
+   </span>
+  </div>
+  <div class="chart" style="margin-top:6px"><canvas id="cm"></canvas><div id="zbox"></div></div>
   <div class="scroll" id="tbl" style="margin-top:10px"></div>
  </section>
 
@@ -170,6 +183,7 @@ function start(){
   $('view').onchange=()=>{periods();detail()};
   $('month').onchange=()=>{pick[$('view').value]=$('month').value;detail()};
   for(const id of['fuel','ya','yb'])$(id).onchange=detail;
+  initZoom();
   detail();
 }
 
@@ -186,9 +200,73 @@ function periods(){
 function draw(id,cfg){
   if(charts[id])charts[id].destroy();
   const tx=getComputedStyle(document.documentElement).getPropertyValue('--mut');
-  cfg.options={responsive:true,maintainAspectRatio:false,color:tx,
-    scales:{x:{ticks:{color:tx}},y:{ticks:{color:tx},title:{display:true,text:'kWh',color:tx}}},...cfg.options};
+  const o=cfg.options||{},sx=(o.scales||{}).x||{},sy=(o.scales||{}).y||{};
+  cfg.options={responsive:true,maintainAspectRatio:false,color:tx,...o,
+    scales:{x:{...sx,ticks:{color:tx,...(sx.ticks||{})}},
+            y:{beginAtZero:true,...sy,ticks:{color:tx,...(sy.ticks||{})},title:{display:true,text:'kWh',color:tx}}}};
   charts[id]=new Chart($(id),cfg);
+}
+
+// ---- zoom on the main graph: drag across it, or use the buttons ----
+const zoom={month:null,week:null}; // visible label range {a,b} per view; null = everything
+let drag=null;
+const zKey=()=>$('view').value;
+function zoomable(){const c=charts.cm;return c&&c.config.type==='line'}
+function applyZoom(){
+  const c=charts.cm;if(!c)return;
+  const z=zoomable()?zoom[zKey()]:null,x=c.options.scales.x,y=c.options.scales.y;
+  if(z){
+    x.min=z.a;x.max=z.b;
+    let mx=0;for(const d of c.data.datasets)for(let i=z.a;i<=z.b;i++){const v=d.data[i];if(v!=null&&v>mx)mx=v}
+    y.max=mx?Math.ceil(mx*1.08):undefined; // refit the kWh axis to what's on screen
+  }else{delete x.min;delete x.max;delete y.max}
+  c.update('none');
+  const n=c.data.labels.length;
+  $('zbar').hidden=!zoomable();
+  for(const id of['zl','zr','zreset'])$(id).disabled=!z;
+  $('zin').disabled=!!z&&z.b-z.a<=2;$('zout').disabled=!z;
+  $('zhint').textContent=z?`Showing ${c.data.labels[z.a]} – ${c.data.labels[z.b]}`:'Drag across the graph to zoom in';
+}
+function setZoom(a,b){
+  const n=charts.cm.data.labels.length;
+  if(b-a<2){const m=(a+b)/2;a=Math.round(m-1);b=a+2}           // at least 3 points visible
+  if(a<0){b-=a;a=0}if(b>n-1){a-=b-(n-1);b=n-1}a=Math.max(0,a);
+  zoom[zKey()]=(a===0&&b===n-1)?null:{a,b};applyZoom();
+}
+function zoomBy(f){ // f<1 zooms in, f>1 zooms out, around the centre
+  const n=charts.cm.data.labels.length,z=zoom[zKey()]||{a:0,b:n-1},m=(z.a+z.b)/2,h=Math.max(1,(z.b-z.a)*f/2);
+  setZoom(Math.round(m-h),Math.round(m+h));
+}
+function panBy(dir){const z=zoom[zKey()];if(!z)return;const s=Math.max(1,Math.round((z.b-z.a)/2))*dir;setZoom(z.a+s,z.b+s)}
+function initZoom(){
+  const cv=$('cm'),box=$('zbox');
+  cv.style.touchAction='pan-y'; // vertical swipes still scroll the page on phones
+  const xAt=e=>e.clientX-cv.getBoundingClientRect().left;
+  cv.addEventListener('pointerdown',e=>{
+    if(!zoomable()||e.button>0)return;
+    const a=charts.cm.chartArea,x=xAt(e);if(x<a.left||x>a.right)return;
+    drag={x0:x,x1:x,id:e.pointerId};
+  });
+  cv.addEventListener('pointermove',e=>{
+    if(!drag||e.pointerId!==drag.id)return;
+    const a=charts.cm.chartArea;drag.x1=Math.min(a.right,Math.max(a.left,xAt(e)));
+    if(Math.abs(drag.x1-drag.x0)>6){
+      if(!box.style.display||box.style.display==='none')try{cv.setPointerCapture(e.pointerId)}catch(_){}
+      Object.assign(box.style,{display:'block',left:Math.min(drag.x0,drag.x1)+'px',width:Math.abs(drag.x1-drag.x0)+'px',top:a.top+'px',height:(a.bottom-a.top)+'px'});
+    }
+  });
+  const end=e=>{
+    if(!drag||(e&&e.pointerId!==drag.id))return;
+    const d=drag;drag=null;box.style.display='none';
+    if(e.type!=='pointerup'||Math.abs(d.x1-d.x0)<=12)return;
+    const s=charts.cm.scales.x,i=p=>Math.round(s.getValueForPixel(p));
+    setZoom(Math.min(i(d.x0),i(d.x1)),Math.max(i(d.x0),i(d.x1)));
+  };
+  cv.addEventListener('pointerup',end);cv.addEventListener('pointercancel',end);
+  cv.addEventListener('dblclick',()=>{if(zoom[zKey()]){zoom[zKey()]=null;applyZoom()}});
+  $('zin').onclick=()=>zoomBy(.5);$('zout').onclick=()=>zoomBy(2);
+  $('zl').onclick=()=>panBy(-1);$('zr').onclick=()=>panBy(1);
+  $('zreset').onclick=()=>{zoom[zKey()]=null;applyZoom()};
 }
 
 function summary(){
@@ -252,6 +330,7 @@ function detail(){
   const sa=span(f,ya,LM),sb=span(f,yb,LM);
   h+=`</tbody><tfoot><tr><td>Jan–${MN[LM]}</td>`+ys.map(y=>`<td>${fmtE(span(f,y,LM),anyEst(f,y,LM))}</td>`).join('')+`<td>${pctHtml(pct(sa,sb),anyEst(f,ya,LM)||anyEst(f,yb,LM))}</td></tr></tfoot></table>`;
   const shownEst=ys.some(y=>anyEst(f,y,11));
+  applyZoom();
   $('tbl').className='scroll';
   $('tbl').innerHTML=h+`<p class="mut">Monthly figures in kWh. The latest month may be incomplete.`+(shownEst?' ~ = estimated (dashed lines and lighter bars in the chart); see About the data.':'')+(f==='gas'&&D.gas_unit==='m3'?` Gas converted from m³ at about ${GASF} kWh/m³.`:'')+'</p>';
 }
@@ -285,6 +364,7 @@ function detailWeeks(){
   const tot=y=>{let s=0;for(let w=1;w<=LWW;w++){const v=wval(f,y,w);if(v==null)return null;s+=v}return s};
   h+=`</tbody><tfoot><tr><td>Wk 1–${LWW}</td>`+ys.map(y=>`<td>${fmt(tot(y))}</td>`).join('')
     +`<td title="Compares the ${n} weeks both years have">${pctHtml(n?pct(sa,sb):null)}</td></tr></tfoot></table>`;
+  applyZoom();
   $('tbl').className='scroll tall';
   $('tbl').innerHTML=h+`<p class="mut">Weekly figures in kWh, Monday to Sunday, numbered by ISO week (dates shown are for ${LWY}). Weeks with missing readings are left blank rather than estimated, and the latest week may be incomplete. The ${ya} vs ${yb} total compares only the ${n} weeks both years have.`
     +(f==='gas'&&D.gas_unit==='m3'?` Gas converted from m³ at about ${GASF} kWh/m³.`:'')+'</p>';
