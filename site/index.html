@@ -61,6 +61,7 @@ label.toggle input{width:16px;height:16px;margin:0;accent-color:#f59e0b}
    <div><label>Compare year</label><select id="ya"></select></div>
    <div><label>Against year</label><select id="yb"></select></div>
   </div>
+  <label class="toggle" id="ttoggle" style="margin:10px 0 0" hidden><input type="checkbox" id="showt" checked> Show outdoor temperature for the two compared years (dotted, right-hand axis)</label>
   <div class="zbar" id="zbar" hidden>
    <span class="mut" id="zhint">Drag across the graph to zoom in</span>
    <span class="zbtns">
@@ -178,6 +179,40 @@ const dval=(f,y,m,d)=>((DI[f][y]||{})[m]||{})[d]??null;
 const dim=(y,m)=>new Date(Date.UTC(y,m+1,0)).getUTCDate();
 const dow=(y,m,d)=>new Date(Date.UTC(y,m,d)).toLocaleDateString('en-GB',{weekday:'short',timeZone:'UTC'});
 
+// ---- outdoor temperature (daily mean °C) and heating degree days ----
+const WT=()=>((D.weather||{}).daily_mean_c)||{};
+const HB=()=>(D.weather||{}).hdd_base_c??15.5;
+const hasT=()=>Object.keys(WT()).length>0;
+const MINH=30; // months/weeks with fewer degree days than this are too mild to weather-adjust
+const tday=(y,m,d)=>WT()[`${y}-${String(m+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`]??null;
+function tstat(days){ // [[y,m,d],...] -> mean °C of the days we have; degree days only if every day is there
+  let s=0,h=0,n=0;
+  for(const [y,m,d] of days){const t=tday(y,m,d);if(t==null)continue;s+=t;h+=Math.max(0,HB()-t);n++}
+  return {mean:n?s/n:null,hdd:n&&n===days.length?h:null};
+}
+const mDays=(y,m)=>Array.from({length:dim(y,m)},(_,i)=>[y,m,i+1]);
+const tMon=(y,m)=>tstat(mDays(y,m));
+const tSpan=(y,m)=>tstat(Array.from({length:m+1},(_,i)=>mDays(y,i)).flat());
+function wDays(y,w1,w2=w1){ // days of ISO weeks w1..w2 of year y
+  const out=[];
+  for(let w=w1;w<=w2;w++){const mon=mondayOf(y,w);if(isoWeek(mon.toISOString().slice(0,10)).y!==y)continue;
+    for(let i=0;i<7;i++){const d=new Date(mon);d.setUTCDate(d.getUTCDate()+i);out.push([d.getUTCFullYear(),d.getUTCMonth(),d.getUTCDate()])}}
+  return out;
+}
+const tWeek=(y,w)=>{const ds=wDays(y,w);return ds.length?tstat(ds):{mean:null,hdd:null}};
+const perDD=(kwh,hdd,min=MINH)=>kwh==null||hdd==null||hdd<min?null:kwh/hdd;
+const fmt1=v=>v==null?'–':v.toFixed(1);
+const fmtT=v=>v==null?'–':v.toFixed(1)+'°';
+const dT=(a,b)=>a==null||b==null?'–':`${a-b>0?'+':''}${(a-b).toFixed(1)}°`;
+let showTemp=true;
+try{showTemp=localStorage.getItem('showT')!=='0'}catch(e){}
+const showT=()=>hasT()&&showTemp;
+const cmpYears=()=>[...new Set([+$('ya').value,+$('yb').value])];
+function tLine(label,data,c){return {label,type:'line',yAxisID:'y2',data,borderColor:c,backgroundColor:c,borderDash:[2,3],borderWidth:1.5,
+  pointRadius:0,pointHitRadius:6,tension:.3,spanGaps:true}}
+const yc=y=>COL[years.indexOf(y)%10];
+const tNote=()=>hasT()?` Outdoor °C is the daily mean for the area; “per °C-day” divides gas by heating degree days (base ${HB()}°C), so a colder period isn’t mistaken for using more.`:'';
+
 function start(){
   const ys=new Set();for(const f of['electricity','gas'])for(const k of[...Object.keys(D[f]),...Object.keys(EST(f))])ys.add(+k.slice(0,4));
   years=[...ys].sort();
@@ -189,8 +224,11 @@ function start(){
   $('esttoggle').hidden=!hasEst;
   $('useest').checked=useEst;
   $('useest').onchange=()=>{useEst=$('useest').checked;try{localStorage.setItem('useEst',useEst?'1':'0')}catch(e){}summary();detail()};
-  if(D.notes&&D.notes.length){
-    $('notes').innerHTML=[...D.notes,'~ marks a total that includes estimated months. Turn off “Fill gaps” to compare only years with complete readings.']
+  $('ttoggle').hidden=!hasT();$('showt').checked=showTemp;
+  $('showt').onchange=()=>{showTemp=$('showt').checked;try{localStorage.setItem('showT',showTemp?'1':'0')}catch(e){}detail()};
+  const wn=hasT()?[`Outdoor temperature comes from Open-Meteo (daily mean, back to ${Object.keys(WT()).sort()[0].slice(0,4)}). Weather-adjusted gas is gas ÷ heating degree days: each day adds how far its mean temperature fell below ${HB()}°C. Hot water and cooking don’t depend on the weather, so the adjustment is approximate and most reliable in winter; mild months (under ${MINH} degree days) aren’t adjusted.`]:[];
+  if((D.notes&&D.notes.length)||wn.length){
+    $('notes').innerHTML=[...(D.notes||[]),...wn,'~ marks a total that includes estimated months. Turn off “Fill gaps” to compare only years with complete readings.']
       .map(n=>`<li>${n.replace(/[<>&]/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;'})[c])}</li>`).join('');
     $('about').hidden=false;
   }
@@ -224,9 +262,14 @@ function draw(id,cfg){
   if(charts[id])charts[id].destroy();
   const tx=getComputedStyle(document.documentElement).getPropertyValue('--mut');
   const o=cfg.options||{},sx=(o.scales||{}).x||{},sy=(o.scales||{}).y||{};
+  const t2=cfg.data.datasets.some(d=>d.yAxisID==='y2');
+  const pl=o.plugins||{},tt=pl.tooltip||{},cb=tt.callbacks||{},lab=cb.label;
   cfg.options={responsive:true,maintainAspectRatio:false,color:tx,...o,
+    plugins:{...pl,tooltip:{...tt,callbacks:{...cb,label:c=>c.dataset.yAxisID==='y2'
+      ?`${c.dataset.label}: ${c.raw==null?'–':c.raw.toFixed(1)+' °C'}`:(lab?lab(c):undefined)}}},
     scales:{x:{...sx,ticks:{color:tx,...(sx.ticks||{})}},
-            y:{beginAtZero:true,...sy,ticks:{color:tx,...(sy.ticks||{})},title:{display:true,text:'kWh',color:tx}}}};
+            y:{beginAtZero:true,...sy,ticks:{color:tx,...(sy.ticks||{})},title:{display:true,text:'kWh',color:tx}},
+            ...(t2?{y2:{position:'right',grid:{drawOnChartArea:false},ticks:{color:tx,callback:v=>v+'°'},title:{display:true,text:'Outdoor °C',color:tx}}}:{})}};
   charts[id]=new Chart($(id),cfg);
 }
 
@@ -240,7 +283,7 @@ function applyZoom(){
   const z=zoomable()?zoom[zKey()]:null,x=c.options.scales.x,y=c.options.scales.y;
   if(z){
     x.min=z.a;x.max=z.b;
-    let mx=0;for(const d of c.data.datasets)for(let i=z.a;i<=z.b;i++){const v=d.data[i];if(v!=null&&v>mx)mx=v}
+    let mx=0;for(const d of c.data.datasets)if(d.yAxisID!=='y2')for(let i=z.a;i<=z.b;i++){const v=d.data[i];if(v!=null&&v>mx)mx=v}
     y.max=mx?Math.ceil(mx*1.08):undefined; // refit the kWh axis to what's on screen
   }else{delete x.min;delete x.max;delete y.max}
   c.update('none');
@@ -297,7 +340,8 @@ function summary(){
   $('span').textContent=`Like-for-like: every year is compared over ${label} only, so ${LY} isn’t penalised for being unfinished. `
     +(useEst?'Lighter bars and ~ totals include estimated months.':'Years missing any of those months are left out.');
   const rows={};
-  for(const f of['electricity','gas'])rows[f]=years.map(y=>({y,s:span(f,y,LM),fy:full(f,y),es:anyEst(f,y,LM),fe:anyEst(f,y,11)}));
+  for(const f of['electricity','gas'])rows[f]=years.map(y=>{const s=span(f,y,LM),t=hasT()?tSpan(y,LM):{mean:null,hdd:null};
+    return {y,s,fy:full(f,y),es:anyEst(f,y,LM),fe:anyEst(f,y,11),t:t.mean,a:perDD(s,t.hdd,1)}});
   const shown=years.filter(y=>rows.electricity.find(r=>r.y===y).s!=null||rows.gas.find(r=>r.y===y).s!=null);
   const ds=(f,name,c)=>{const r=y=>rows[f].find(x=>x.y===y);
     return {label:name,backgroundColor:shown.map(y=>r(y).es?fade(c):c),borderColor:c,borderWidth:shown.map(y=>r(y).es?1.5:0),data:shown.map(y=>r(y).s)}};
@@ -318,12 +362,18 @@ function summary(){
         +(pa==null||avg.length<2?'. ':`${p==null?'':' and '}<b class="${pa>0?'up':'dn'}">${Math.abs(pa).toFixed(1)}% ${pa>0?'above':'below'}</b> the `
           +(avg[avg.length-1].y-avg[0].y===avg.length-1?`${avg[0].y}–${avg[avg.length-1].y}`:avg.map(r=>r.y).join('/'))+' average. ')
         +(n>1?(rank===1?`The highest of ${n} years.`:rank===n?`The lowest of ${n} years.`:`#${rank} highest of ${n} years.`):'');
+      if(f==='gas'&&prev&&cur.a!=null&&prev.a!=null){
+        const pw=pct(cur.a,prev.a),dt=cur.t-prev.t;
+        v+=` <br>Allowing for the weather (it was ${Math.abs(dt).toFixed(1)}°C ${dt<0?'colder':'warmer'} on average), it’s <b class="${pw>0?'up':'dn'}">${Math.abs(pw).toFixed(1)}% ${pw>0?'higher':'lower'}</b> per degree day.`;
+      }
     }
-    let t=`<table><thead><tr><th>Year</th><th>${label}</th><th>vs prev</th><th>Full year</th></tr></thead><tbody>`;
+    const G=f==='gas'&&hasT();
+    let t=`<table><thead><tr><th>Year</th><th>${label}</th><th>vs prev</th><th>Full year</th>${G?'<th title="Average outdoor temperature">Outdoor</th><th>Per °C-day</th><th>vs prev</th>':''}</tr></thead><tbody>`;
     rs.forEach((r,i)=>{if(r.s==null&&r.fy==null)return;
-      const p=i>0?pct(r.s,rs[i-1].s):null;
-      t+=`<tr><td>${r.y}</td><td>${fmtE(r.s,r.es)}</td><td>${pctHtml(p,r.es||(i>0&&rs[i-1].es))}</td><td>${fmtE(r.fy,r.fe)}</td></tr>`});
-    t+='</tbody></table>';
+      const p=i>0?pct(r.s,rs[i-1].s):null,e=r.es||(i>0&&rs[i-1].es);
+      t+=`<tr><td>${r.y}</td><td>${fmtE(r.s,r.es)}</td><td>${pctHtml(p,e)}</td><td>${fmtE(r.fy,r.fe)}</td>`
+        +(G?`<td>${fmtT(r.t)}</td><td>${fmt1(r.a)}</td><td>${pctHtml(i>0?pct(r.a,rs[i-1].a):null,e)}</td>`:'')+'</tr>'});
+    t+='</tbody></table>'+(G?`<p class="mut">Outdoor and per °C-day columns cover ${label}.${tNote()}</p>`:'');
     html+=`<section class="card"><h2><span class="dot" style="background:var(--${f==='gas'?'gs':'el'})"></span>${NAME[f]}</h2><p class="verdict">${v}</p><div class="scroll">${t}</div></section>`;
   }
   $('fuels').innerHTML=html;
@@ -339,24 +389,32 @@ function detail(){
     draw('cm',{type:'line',data:{labels:MN,datasets:ys.map(y=>{const c=COL[years.indexOf(y)%10],e=m=>isEst(f,y,m);
       return {label:y,borderColor:c,backgroundColor:c,tension:.25,data:Array.from({length:12},(_,m)=>val(f,y,m)),
         pointBackgroundColor:Array.from({length:12},(_,m)=>e(m)?'transparent':c),pointRadius:Array.from({length:12},(_,m)=>e(m)?4:3),
-        segment:{borderDash:s=>e(s.p0DataIndex)||e(s.p1DataIndex)?[5,4]:undefined}}})},
+        segment:{borderDash:s=>e(s.p0DataIndex)||e(s.p1DataIndex)?[5,4]:undefined}}}).concat(showT()?cmpYears().map(y=>tLine(y+' outdoor',MN.map((_,m)=>tMon(y,m).mean),yc(y))):[])},
       options:{plugins:{tooltip:{callbacks:{label:c=>`${c.dataset.label}: ${isEst(f,+c.dataset.label,c.dataIndex)?'~':''}${fmt(c.raw)} kWh${isEst(f,+c.dataset.label,c.dataIndex)?' (estimated)':''}`}}}}});
   }else{
     const m=+mo,c=f==='gas'?'#f97316':'#3b82f6';
-    draw('cm',{type:'bar',data:{labels:ys,datasets:[{label:MN[m]+' kWh',backgroundColor:ys.map(y=>isEst(f,y,m)?fade(c):c),borderColor:c,borderWidth:ys.map(y=>isEst(f,y,m)?1.5:0),data:ys.map(y=>val(f,y,m))}]},
+    draw('cm',{type:'bar',data:{labels:ys,datasets:[{label:MN[m]+' kWh',backgroundColor:ys.map(y=>isEst(f,y,m)?fade(c):c),borderColor:c,borderWidth:ys.map(y=>isEst(f,y,m)?1.5:0),data:ys.map(y=>val(f,y,m))}]
+      .concat(showT()?[{...tLine('Avg outdoor',ys.map(y=>tMon(y,m).mean),'#8b8aa0'),pointRadius:3}]:[])},
       options:{plugins:{legend:{display:false},tooltip:{callbacks:{label:x=>`${isEst(f,+x.label,m)?'~':''}${fmt(x.raw)} kWh${isEst(f,+x.label,m)?' (estimated)':''}`}}}}});
   }
-  let h='<table><thead><tr><th></th>'+ys.map(y=>`<th>${y}</th>`).join('')+`<th>${ya} vs ${yb}</th></tr></thead><tbody>`;
+  const G=f==='gas'&&hasT();
+  let h='<table><thead><tr><th></th>'+ys.map(y=>`<th>${y}</th>`).join('')+`<th>${ya} vs ${yb}</th>`+(G?'<th title="Change in gas per degree day">Weather-adj.</th>':'')+(hasT()?`<th>°C ${ya} / ${yb}</th>`:'')+'</tr></thead><tbody>';
   for(let m=0;m<12;m++){
-    const a=val(f,ya,m),b=val(f,yb,m);
-    h+=`<tr><td>${MN[m]}</td>`+ys.map(y=>`<td>${fmtE(val(f,y,m),isEst(f,y,m))}</td>`).join('')+`<td>${pctHtml(pct(a,b),isEst(f,ya,m)||isEst(f,yb,m))}</td></tr>`;
+    const a=val(f,ya,m),b=val(f,yb,m),e=isEst(f,ya,m)||isEst(f,yb,m),ta=tMon(ya,m),tb=tMon(yb,m);
+    h+=`<tr><td>${MN[m]}</td>`+ys.map(y=>`<td>${fmtE(val(f,y,m),isEst(f,y,m))}</td>`).join('')+`<td>${pctHtml(pct(a,b),e)}</td>`
+      +(G?`<td>${pctHtml(pct(perDD(a,ta.hdd),perDD(b,tb.hdd)),e)}</td>`:'')+(hasT()?`<td class="mut">${fmt1(ta.mean)} / ${fmt1(tb.mean)}</td>`:'')+'</tr>';
   }
-  const sa=span(f,ya,LM),sb=span(f,yb,LM);
-  h+=`</tbody><tfoot><tr><td>Jan–${MN[LM]}</td>`+ys.map(y=>`<td>${fmtE(span(f,y,LM),anyEst(f,y,LM))}</td>`).join('')+`<td>${pctHtml(pct(sa,sb),anyEst(f,ya,LM)||anyEst(f,yb,LM))}</td></tr></tfoot></table>`;
+  const sa=span(f,ya,LM),sb=span(f,yb,LM),ea=anyEst(f,ya,LM)||anyEst(f,yb,LM),sta=tSpan(ya,LM),stb=tSpan(yb,LM);
+  h+=`</tbody><tfoot><tr><td>Jan–${MN[LM]}</td>`+ys.map(y=>`<td>${fmtE(span(f,y,LM),anyEst(f,y,LM))}</td>`).join('')+`<td>${pctHtml(pct(sa,sb),ea)}</td>`
+    +(G?`<td>${pctHtml(pct(perDD(sa,sta.hdd,1),perDD(sb,stb.hdd,1)),ea)}</td>`:'')+(hasT()?`<td>${fmt1(sta.mean)} / ${fmt1(stb.mean)}</td>`:'')+'</tr>';
+  const ex=(G?1:0)+(hasT()?1:0),pad='<td></td>'.repeat(ex);
+  if(hasT())h+=`<tr class="mut"><td>Outdoor °C</td>`+ys.map(y=>`<td>${fmtT(tSpan(y,LM).mean)}</td>`).join('')+`<td>${dT(sta.mean,stb.mean)}</td>${pad}</tr>`;
+  if(G)h+=`<tr><td>Per °C-day</td>`+ys.map(y=>`<td>${fmt1(perDD(span(f,y,LM),tSpan(y,LM).hdd,1))}</td>`).join('')+`<td>${pctHtml(pct(perDD(sa,sta.hdd,1),perDD(sb,stb.hdd,1)),ea)}</td>${pad}</tr>`;
+  h+='</tfoot></table>';
   const shownEst=ys.some(y=>anyEst(f,y,11));
   applyZoom();
   $('tbl').className='scroll';
-  $('tbl').innerHTML=h+`<p class="mut">Monthly figures in kWh. The latest month may be incomplete.`+(shownEst?' ~ = estimated (dashed lines and lighter bars in the chart); see About the data.':'')+(f==='gas'&&D.gas_unit==='m3'?` Gas converted from m³ at about ${GASF} kWh/m³.`:'')+'</p>';
+  $('tbl').innerHTML=h+`<p class="mut">Monthly figures in kWh. The latest month may be incomplete.`+(shownEst?' ~ = estimated (dashed lines and lighter bars in the chart); see About the data.':'')+(f==='gas'&&D.gas_unit==='m3'?` Gas converted from m³ at about ${GASF} kWh/m³.`:'')+(f==='gas'?tNote()+(hasT()?` Months under ${MINH} degree days aren’t weather-adjusted.`:''):'')+'</p>';
 }
 
 function detailDays(){
@@ -365,10 +423,11 @@ function detailDays(){
   const ys=years.filter(y=>DI[f][y]&&DI[f][y][m]&&Object.keys(DI[f][y][m]).length);
   const N=Math.max(...ys.map(y=>dim(y,m)),dim(2024,m)),Dd=Array.from({length:N},(_,i)=>i+1);
   draw('cm',{type:'line',data:{labels:Dd.map(String),datasets:ys.map(y=>{const c=COL[years.indexOf(y)%10];
-    return {label:y,borderColor:c,backgroundColor:c,tension:.2,pointRadius:2,borderWidth:2,data:Dd.map(d=>dval(f,y,m,d))}})},
+    return {label:y,borderColor:c,backgroundColor:c,tension:.2,pointRadius:2,borderWidth:2,data:Dd.map(d=>dval(f,y,m,d))}})
+    .concat(showT()?cmpYears().map(y=>tLine(y+' outdoor',Dd.map(d=>d<=dim(y,m)?tday(y,m,d):null),yc(y))):[])},
     options:{interaction:{mode:'index',intersect:false},scales:{x:{title:{display:true,text:MN[m]}}},
       plugins:{tooltip:{callbacks:{title:t=>`${t[0].label} ${MN[m]}`,
-        label:c=>`${c.dataset.label} (${dow(+c.dataset.label,m,c.dataIndex+1)}): ${fmt(c.raw)} kWh`}}}}});
+        label:c=>`${c.dataset.label} (${dow(+c.dataset.label,m,c.dataIndex+1)}): ${fmt(c.raw)} kWh`+(hasT()?` · ${fmt1(tday(+c.dataset.label,m,c.dataIndex+1))}°C`:'')}}}}});
   // like-for-like: in the latest month only compare days that have finished
   const upto=(m===LDM&&ys.includes(LDY))?LDD:N;
   let h='<table><thead><tr><th>Day</th>'+ys.map(y=>`<th>${y}</th>`).join('')+`<th>${ya} vs ${yb}</th></tr></thead><tbody>`;
@@ -381,12 +440,19 @@ function detailDays(){
   for(let d=1;d<=upto;d++){const a=dval(f,ya,m,d),b=dval(f,yb,m,d);if(a!=null&&b!=null){sa+=a;sb+=b;n++}}
   const tot=y=>{let s=0;for(let d=1;d<=Math.min(upto,dim(y,m));d++){const v=dval(f,y,m,d);if(v==null)return null;s+=v}return s};
   h+=`</tbody><tfoot><tr><td>${upto<N?`1–${upto} ${MN[m]}`:'Month'}</td>`+ys.map(y=>`<td>${fmt(tot(y))}</td>`).join('')
-    +`<td title="Compares the ${n} days both years have">${pctHtml(n?pct(sa,sb):null)}</td></tr></tfoot></table>`;
+    +`<td title="Compares the ${n} days both years have">${pctHtml(n?pct(sa,sb):null)}</td></tr>`;
+  if(hasT()){
+    const dd=y=>Array.from({length:Math.min(upto,dim(y,m))},(_,i)=>[y,m,i+1]),ts=y=>tstat(dd(y));
+    h+=`<tr class="mut"><td>Outdoor °C</td>`+ys.map(y=>`<td>${fmtT(ts(y).mean)}</td>`).join('')+`<td>${dT(ts(ya).mean,ts(yb).mean)}</td></tr>`;
+    if(f==='gas')h+=`<tr><td>Per °C-day</td>`+ys.map(y=>`<td>${fmt1(perDD(tot(y),ts(y).hdd,1))}</td>`).join('')
+      +`<td>${pctHtml(pct(perDD(tot(ya),ts(ya).hdd,1),perDD(tot(yb),ts(yb).hdd,1)))}</td></tr>`;
+  }
+  h+='</tfoot></table>';
   applyZoom();
   $('tbl').className='scroll tall';
   $('tbl').innerHTML=(ys.length?h:'<p class="mut">No daily readings for this month yet.</p>')
     +`<p class="mut">Daily figures in kWh (weekday shown for ${ya}). Days with missing readings are left blank; today isn’t included until it’s finished. The ${ya} vs ${yb} total compares only the ${n} days both years have.`
-    +(f==='gas'&&D.gas_unit==='m3'?` Gas converted from m³ at about ${GASF} kWh/m³.`:'')+'</p>';
+    +(f==='gas'&&D.gas_unit==='m3'?` Gas converted from m³ at about ${GASF} kWh/m³.`:'')+(f==='gas'?tNote():'')+'</p>';
 }
 
 function detailWeeks(){
@@ -396,13 +462,15 @@ function detailWeeks(){
   const W=Array.from({length:53},(_,i)=>i+1);
   if(wo==='all'){
     draw('cm',{type:'line',data:{labels:W.map(w=>'Wk '+w),datasets:ys.map(y=>{const c=COL[years.indexOf(y)%10];
-      return {label:y,borderColor:c,backgroundColor:c,tension:.25,pointRadius:1.5,borderWidth:2,data:W.map(w=>wval(f,y,w))}})},
+      return {label:y,borderColor:c,backgroundColor:c,tension:.25,pointRadius:1.5,borderWidth:2,data:W.map(w=>wval(f,y,w))}})
+      .concat(showT()?cmpYears().map(y=>tLine(y+' outdoor',W.map(w=>tWeek(y,w).mean),yc(y))):[])},
       options:{interaction:{mode:'index',intersect:false},
         scales:{x:{ticks:{maxTicksLimit:14}}},
-        plugins:{tooltip:{callbacks:{title:t=>`${t[0].label} (w/c ${wkLabel(+t[0].dataset.label,t[0].dataIndex+1)})`,label:c=>`${c.dataset.label}: ${fmt(c.raw)} kWh`}}}}});
+        plugins:{tooltip:{callbacks:{title:t=>`${t[0].label} (w/c ${wkLabel(parseInt(t[0].dataset.label),t[0].dataIndex+1)})`,label:c=>`${c.dataset.label}: ${fmt(c.raw)} kWh`}}}}});
   }else{
     const w=+wo,c=f==='gas'?'#f97316':'#3b82f6';
-    draw('cm',{type:'bar',data:{labels:ys,datasets:[{label:'Week '+w,backgroundColor:c,data:ys.map(y=>wval(f,y,w))}]},
+    draw('cm',{type:'bar',data:{labels:ys,datasets:[{label:'Week '+w,backgroundColor:c,data:ys.map(y=>wval(f,y,w))}]
+      .concat(showT()?[{...tLine('Avg outdoor',ys.map(y=>tWeek(y,w).mean),'#8b8aa0'),pointRadius:3}]:[])},
       options:{plugins:{legend:{display:false},tooltip:{callbacks:{label:x=>`w/c ${wkLabel(+x.label,w)}: ${fmt(x.raw)} kWh`}}}}});
   }
   // table: every week that has data in any year
@@ -417,11 +485,18 @@ function detailWeeks(){
   for(let w=1;w<=LWW;w++){const a=wval(f,ya,w),b=wval(f,yb,w);if(a!=null&&b!=null){sa+=a;sb+=b;n++}}
   const tot=y=>{let s=0;for(let w=1;w<=LWW;w++){const v=wval(f,y,w);if(v==null)return null;s+=v}return s};
   h+=`</tbody><tfoot><tr><td>Wk 1–${LWW}</td>`+ys.map(y=>`<td>${fmt(tot(y))}</td>`).join('')
-    +`<td title="Compares the ${n} weeks both years have">${pctHtml(n?pct(sa,sb):null)}</td></tr></tfoot></table>`;
+    +`<td title="Compares the ${n} weeks both years have">${pctHtml(n?pct(sa,sb):null)}</td></tr>`;
+  if(hasT()){
+    const ts=y=>tstat(wDays(y,1,LWW));
+    h+=`<tr class="mut"><td>Outdoor °C</td>`+ys.map(y=>`<td>${fmtT(ts(y).mean)}</td>`).join('')+`<td>${dT(ts(ya).mean,ts(yb).mean)}</td></tr>`;
+    if(f==='gas')h+=`<tr><td>Per °C-day</td>`+ys.map(y=>`<td>${fmt1(perDD(tot(y),ts(y).hdd,1))}</td>`).join('')
+      +`<td>${pctHtml(pct(perDD(tot(ya),ts(ya).hdd,1),perDD(tot(yb),ts(yb).hdd,1)))}</td></tr>`;
+  }
+  h+='</tfoot></table>';
   applyZoom();
   $('tbl').className='scroll tall';
   $('tbl').innerHTML=h+`<p class="mut">Weekly figures in kWh, Monday to Sunday, numbered by ISO week (dates shown are for ${LWY}). Weeks with missing readings are left blank rather than estimated, and the latest week may be incomplete. The ${ya} vs ${yb} total compares only the ${n} weeks both years have.`
-    +(f==='gas'&&D.gas_unit==='m3'?` Gas converted from m³ at about ${GASF} kWh/m³.`:'')+'</p>';
+    +(f==='gas'&&D.gas_unit==='m3'?` Gas converted from m³ at about ${GASF} kWh/m³.`:'')+(f==='gas'?tNote():'')+'</p>';
 }
 
 // installable app: offline cache + "Install app" button
