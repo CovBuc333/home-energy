@@ -2,7 +2,7 @@ name: Update energy data and deploy site
 
 on:
   schedule:
-    - cron: "17 6 * * *"   # daily, 06:17 UTC
+    - cron: "17 6,19 * * *"   # twice daily, 06:17 and 19:17 UTC (evening run catches late readings)
   workflow_dispatch:        # "Run workflow" button
   push:
     branches: [main]
