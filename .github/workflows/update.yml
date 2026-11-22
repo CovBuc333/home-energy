@@ -49,7 +49,15 @@ jobs:
           git config user.name "energy-bot"
           git config user.email "energy-bot@users.noreply.github.com"
           git add site/data.json
-          git diff --cached --quiet || (git commit -m "Update energy data" && git push)
+          git diff --cached --quiet && exit 0
+          git commit -m "Update energy data"
+          # main may have moved during the run (e.g. a code push) - rebase and retry
+          for i in 1 2 3; do
+            git pull --rebase origin main && git push && exit 0
+            echo "Push attempt $i failed, retrying..."
+            sleep 5
+          done
+          exit 1
 
       - uses: actions/configure-pages@v5
 
